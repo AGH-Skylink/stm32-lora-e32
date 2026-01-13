@@ -15,7 +15,104 @@ Developed for the **AGH Skylink StratoLink project** (stratospheric balloon payl
 - Example code to set TX power, read back parameters, and return to normal mode.
 
 ---
+## Background & Motivation (Problem)
 
+During early integration tests, the firmware used blocking UART receive calls (HAL_UART_Receive) to handle:
+
+E32 configuration responses
+
+Status replies (e.g. parameter readback)
+
+Runtime messages
+
+This approach caused several issues:
+
+⚠️ CPU blocking during UART reception
+
+⚠️ Data loss risk when bursts arrived while the MCU was busy
+
+⚠️ Unsafe mixing of blocking RX and interrupt/DMA-driven peripherals
+
+⚠️ Difficult extension to background parsing or command handling
+
+For a flight system (balloon payload), UART reception must be loss-tolerant, non-blocking, and deterministic.
+
+## Design Improvement (Solution)
+
+To address these issues, the UART RX path was redesigned around DMA + a software ring buffer.
+
+Key Design Decisions
+
+DMA Receive-to-Idle used for USART1 (E32 interface)
+
+RX DMA continuously fills a small DMA buffer
+
+Data is pushed into a larger circular ring buffer
+
+All parsing is done in the main loop, never in ISR context
+
+No blocking UART receive calls are used on USART1
+
+RX Pipeline
+USART1 → DMA (RxBuf[512])
+        → IDLE interrupt
+        → ISR: push bytes to MainBuf[2048] ring buffer
+        → main loop: parse frames / lines / tokens
+
+Implemented Features
+Core Functionality
+
+UART driver for E32-900T30S (9600 baud, 8N1)
+
+Mode control via M0 / M1 GPIO pins
+
+AUX pin synchronization for safe command timing
+
+Send and receive HEX configuration frames
+
+Example: C1 C1 C1 (Read Parameters)
+
+Return to NORMAL mode after configuration
+
+DMA Ring Buffer (New)
+
+Continuous UART RX using DMA + IDLE line detection
+
+Software ring buffer with overflow protection
+
+Oldest data dropped on overflow (real-time priority)
+
+Utility functions:
+
+RB_ReadExact() – read fixed-length frames
+
+RB_ReadLine() – line-based parsing
+
+RB_FindSequence() – token detection (e.g. "OK")
+
+Debug & Monitoring
+
+USB CDC logging via ST-LINK Virtual COM Port
+
+Non-blocking debug prints (outside ISR)
+
+Runtime status monitoring without RX stalls
+
+Results
+
+After migrating to the DMA ring buffer design:
+
+✅ Zero blocking in UART RX path
+
+✅ Stable reception under continuous/burst traffic
+
+✅ Safe coexistence with USB CDC and other interrupts
+
+✅ Clear separation of ISR (data capture) and application logic (parsing)
+
+✅ Codebase became easier to extend and reason about
+
+This architecture is suitable for long-running embedded systems and mission-critical telemetry links.
 ##  Requirements
 - **Hardware**
   - STM32F401RE / STM32F446RE Nucleo (or compatible STM32 board).
