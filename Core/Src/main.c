@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body with myprint logging (E32-900T30S HEX mode)
+  * @brief          : E32-900T30S with DMA Ring Buffer UART Reception
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -15,10 +15,25 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_rx;
+
+/* USER CODE BEGIN PV */
+#define RxBuf_SIZE   512
+#define MainBuf_SIZE 2048
+
+uint8_t RxBuf[RxBuf_SIZE];
+uint8_t MainBuf[MainBuf_SIZE];
+
+uint16_t oldPos = 0;
+uint16_t newPos = 0;
+
+int isOK = 0;
+/* USER CODE END PV */
 
 /* Function prototypes -------------------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 
 /* USER CODE BEGIN PFP */
@@ -35,10 +50,12 @@ static void E32_SetModeNormal(void) {
   HAL_GPIO_WritePin(E32_M0_GPIO_Port, E32_M0_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(E32_M1_GPIO_Port, E32_M1_Pin, GPIO_PIN_RESET);
 }
+
 static void E32_SetModeConfig(void) {
   HAL_GPIO_WritePin(E32_M0_GPIO_Port, E32_M0_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(E32_M1_GPIO_Port, E32_M1_Pin, GPIO_PIN_SET);
 }
+
 static uint8_t E32_WaitAUX_High(uint32_t timeout_ms) {
   uint32_t start = HAL_GetTick();
   while ((HAL_GetTick() - start) < timeout_ms) {
@@ -46,14 +63,59 @@ static uint8_t E32_WaitAUX_High(uint32_t timeout_ms) {
   }
   return 0;
 }
+
 static HAL_StatusTypeDef E32_SendFrame(const uint8_t *data, uint16_t len, uint32_t to) {
   return HAL_UART_Transmit(&huart1, (uint8_t*)data, len, to);
 }
+
 static HAL_StatusTypeDef E32_ReadBytes(uint8_t *buf, uint16_t len, uint32_t to) {
   return HAL_UART_Receive(&huart1, buf, len, to);
 }
+
 void myprint(const char *text) {
   CDC_Transmit_FS((uint8_t*)text, strlen(text));
+}
+
+/* DMA Ring Buffer Callback */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if (huart->Instance == USART1)
+  {
+    oldPos = newPos;  // Update the last position before copying new data
+
+    /* If the data is large and it is about to exceed the buffer size, 
+     * we have to route it to the start of the buffer (circular buffer)
+     */
+    if (oldPos + Size > MainBuf_SIZE)
+    {
+      uint16_t datatocopy = MainBuf_SIZE - oldPos;
+      memcpy((uint8_t *)MainBuf + oldPos, RxBuf, datatocopy);
+
+      oldPos = 0;
+      memcpy((uint8_t *)MainBuf, (uint8_t *)RxBuf + datatocopy, (Size - datatocopy));
+      newPos = (Size - datatocopy);
+    }
+    else
+    {
+      memcpy((uint8_t *)MainBuf + oldPos, RxBuf, Size);
+      newPos = Size + oldPos;
+    }
+
+    /* Restart the DMA */
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, (uint8_t *)RxBuf, RxBuf_SIZE);
+    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+
+    /****************** PROCESS THE DATA HERE *********************/
+    /* Example: Check for "OK" keyword in incoming data */
+    for (int i = 0; i < Size; i++)
+    {
+      if ((RxBuf[i] == 'O') && (RxBuf[i+1] == 'K'))
+      {
+        isOK = 1;
+        myprint("Received OK!\r\n");
+      }
+    }
+  }
 }
 /* USER CODE END 0 */
 
@@ -62,11 +124,12 @@ int main(void)
   HAL_Init();
   SystemClock_Config();
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
 
   /* USER CODE BEGIN 2 */
-  myprint("STM32 boot OK (USART1 + HEX)\r\n");
+  myprint("STM32 boot OK (E32 + DMA Ring Buffer)\r\n");
 
   // Enter CONFIG mode
   myprint("Entering CONFIG mode...\r\n");
@@ -94,11 +157,18 @@ int main(void)
   E32_SetModeNormal();
   myprint("Back to NORMAL mode.\r\n");
 
+  // Start DMA Ring Buffer Reception
+  myprint("Starting DMA reception...\r\n");
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, RxBuf, RxBuf_SIZE);
+  __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+
   /* USER CODE END 2 */
 
   while (1) {
     HAL_Delay(1000);
-
+    
+    // You can add periodic tasks here
+    // For example, send data or check ring buffer
   }
 }
 
@@ -128,6 +198,18 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) { Error_Handler(); }
+}
+
+/* DMA Init Function */
+static void MX_DMA_Init(void)
+{
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream2_IRQn interrupt configuration (USART1_RX) */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 }
 
 /* USART1 init function */
@@ -181,6 +263,7 @@ void Error_Handler(void)
   __disable_irq();
   while (1) { }
 }
+
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t *file, uint32_t line)
 {
