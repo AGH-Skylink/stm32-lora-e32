@@ -23,7 +23,7 @@ DMA_HandleTypeDef hdma_usart1_rx;
 
 uint8_t RxBuf[RxBuf_SIZE];
 uint8_t MainBuf[MainBuf_SIZE];
-
+//ISR(인터럽트)와 main loop가 같은 변수를 동시에 읽고/쓰기 때문에, 컴파일러 최적화로 값이 “안 바뀌는 것처럼” 보이는 버그를 막기 위해
 /* DMA-only ring buffer pointers */
 static volatile uint16_t writePos = 0;  // ISR에서 증가
 static volatile uint16_t readPos  = 0;  // main loop에서 증가
@@ -80,7 +80,7 @@ static uint8_t E32_WaitAUX_High(uint32_t timeout_ms) {
 static HAL_StatusTypeDef E32_SendFrame(const uint8_t *data, uint16_t len, uint32_t to) {
   return HAL_UART_Transmit(&huart1, (uint8_t*)data, len, to);
 }
-
+//Sends debug message to USB serial port
 void myprint(const char *text) {
   /* NOTE: do NOT call this from UART RX callback (ISR context) */
   CDC_Transmit_FS((uint8_t*)text, strlen(text));
@@ -118,7 +118,7 @@ static int RB_ReadExact(uint8_t *dst, uint16_t len, uint32_t timeout_ms)
       continue;
     }
     if ((HAL_GetTick() - t0) >= timeout_ms) return 0;
-    HAL_Delay(1);
+    HAL_Delay(1);//small delay to avoid busy waiting and reduce CPU usage while waiting for data
   }
   return 1;
 }
@@ -126,17 +126,17 @@ static int RB_ReadExact(uint8_t *dst, uint16_t len, uint32_t timeout_ms)
 /* Read until '\n' (included) or timeout. Returns 1 if got any char. */
 int RB_ReadLine(char *out, uint16_t maxlen, uint32_t timeout_ms)
 {
-  if (!out || maxlen < 2) return 0;
+  if (!out || maxlen < 2) return 0; //최소한 문자 1개 + '\0'
 
   uint32_t t0 = HAL_GetTick();
   uint16_t idx = 0;
 
-  while ((HAL_GetTick() - t0) < timeout_ms)
+  while ((HAL_GetTick() - t0) < timeout_ms) //prevent infinite loop
   {
     uint8_t b;
     if (RB_GetByte(&b))
     {
-      if (idx < (uint16_t)(maxlen - 1)) out[idx++] = (char)b;
+      if (idx < (uint16_t)(maxlen - 1)) out[idx++] = (char)b; 
       if (b == '\n') break;
       continue;
     }
@@ -185,7 +185,7 @@ static int E32_ReadParams_DMA(uint8_t resp6[6], uint32_t timeout_ms)
   /* flush pending RX (optional) */
   readPos = writePos;
 
-  if (E32_SendFrame(cmd_read_params, sizeof(cmd_read_params), 1000) != HAL_OK)
+  if (E32_SendFrame(cmd_read_params, sizeof(cmd_read_params), 1000) != HAL_OK) //sizeof(cmd_read_params) = 3
     return 0;
 
   return RB_ReadExact(resp6, 6, timeout_ms);
@@ -262,10 +262,10 @@ int main(void)
 
   while (1) {
     /* USER CODE BEGIN 3 */
-
+//UART로 들어오는 데이터 스트림(MainBuf 링버퍼) 안에서 "OK"라는 토큰이 보이면, 그때만 로그를 출력하는 “가벼운(background) 파싱
     /* Example background parse: find "OK" in stream (non-blocking-ish with short timeout) */
     static const uint8_t ok_seq[] = {'O','K'};
-    if (RB_FindSequence(ok_seq, sizeof(ok_seq), 5)) {
+    if (RB_FindSequence(ok_seq, sizeof(ok_seq), 5)) { //5ms
       ok_print_pending = 1;
     }
 
